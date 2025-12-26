@@ -25,7 +25,8 @@ This project contains modular installation scripts that set up Arch Linux with:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ArchBootstrap.git
+git clone https://github.com/Eminence-bit/ArchBoostrap.git
+
 cd ArchBootstrap
 
 # Run individual scripts or use the main installer (see below)
