@@ -1,0 +1,53 @@
+# Arch Linux
+pacman.conf
+pacman.conf.pacnew
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv
+venv/
+ENV/
+env/
+.env
+
+# Node
+node_modules/
+package-lock.json
+yarn.lock
+.npm
+.node_repl_history
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Personal configs (uncomment as needed)
+# .config/
+# .ssh/
+# .bashrc.local
