@@ -166,7 +166,7 @@ symlink_configs() {
     log_info "Creating symlinks for configuration files..."
     
     local configs=(
-        "hypr:$HOME/.config/hypr"
+        "hypr/hyprland.conf:$HOME/.config/hypr/hyprland.conf"
         "waybar:$HOME/.config/waybar"
         "wofi:$HOME/.config/wofi"
         "kitty:$HOME/.config/kitty"
@@ -176,27 +176,50 @@ symlink_configs() {
     )
     
     for config in "${configs[@]}"; do
-        local src_dir="${config%%:*}"
-        local dest_dir="${config##*:}"
-        local src_path="$SCRIPT_DIR/$src_dir"
+        local src_path="${config%%:*}"
+        local dest_path="${config##*:}"
+        local full_src_path="$SCRIPT_DIR/$src_path"
         
-        if [[ ! -d "$src_path" ]]; then
-            log_error "Source directory not found: $src_path"
-            continue
+        # Handle single file vs directory
+        if [[ "$src_path" == *".conf" ]]; then
+            # Single file
+            if [[ ! -f "$full_src_path" ]]; then
+                log_error "Source file not found: $full_src_path"
+                continue
+            fi
+            
+            # Remove existing file if it's not a symlink
+            if [[ -f "$dest_path" && ! -L "$dest_path" ]]; then
+                log_info "Backing up existing config: $dest_path -> $dest_path.backup.$(date +%s)"
+                mv "$dest_path" "$dest_path.backup.$(date +%s)"
+            elif [[ -L "$dest_path" ]]; then
+                log_info "Removing existing symlink: $dest_path"
+                rm "$dest_path"
+            fi
+            
+            # Create symlink
+            ln -sf "$full_src_path" "$dest_path"
+            log_info "Symlinked: $full_src_path -> $dest_path"
+        else
+            # Directory
+            if [[ ! -d "$full_src_path" ]]; then
+                log_error "Source directory not found: $full_src_path"
+                continue
+            fi
+            
+            # Remove existing directory if it's not a symlink
+            if [[ -d "$dest_path" && ! -L "$dest_path" ]]; then
+                log_info "Backing up existing config: $dest_path -> $dest_path.backup.$(date +%s)"
+                mv "$dest_path" "$dest_path.backup.$(date +%s)"
+            elif [[ -L "$dest_path" ]]; then
+                log_info "Removing existing symlink: $dest_path"
+                rm "$dest_path"
+            fi
+            
+            # Create symlink
+            ln -sf "$full_src_path" "$dest_path"
+            log_info "Symlinked: $full_src_path -> $dest_path"
         fi
-        
-        # Remove existing directory if it's not a symlink
-        if [[ -d "$dest_dir" && ! -L "$dest_dir" ]]; then
-            log_info "Backing up existing config: $dest_dir -> $dest_dir.backup.$(date +%s)"
-            mv "$dest_dir" "$dest_dir.backup.$(date +%s)"
-        elif [[ -L "$dest_dir" ]]; then
-            log_info "Removing existing symlink: $dest_dir"
-            rm "$dest_dir"
-        fi
-        
-        # Create symlink
-        ln -sf "$src_path" "$dest_dir"
-        log_info "Symlinked: $src_path -> $dest_dir"
     done
     
     log_success "Configuration symlinks created"
@@ -334,6 +357,26 @@ cleanup_residue_files() {
     log_info "Cleaning up residue and outdated configuration files..."
     
     local cleaned_count=0
+    
+    # Clean up old modular Hyprland config files (now using single file)
+    local old_hypr_files=(
+        "$HOME/.config/hypr/env.conf"
+        "$HOME/.config/hypr/input.conf"
+        "$HOME/.config/hypr/binds.conf"
+        "$HOME/.config/hypr/layout.conf"
+        "$HOME/.config/hypr/rules.conf"
+        "$HOME/.config/hypr/animations.conf"
+        "$HOME/.config/hypr/decoration.conf"
+        "$HOME/.config/hypr/gestures.conf"
+    )
+    
+    for old_file in "${old_hypr_files[@]}"; do
+        if [[ -f "$old_file" && ! -L "$old_file" ]]; then
+            rm -f "$old_file"
+            log_info "Removed old modular config: $(basename "$old_file")"
+            ((cleaned_count++))
+        fi
+    done
     
     # Clean up old backup files (older than 30 days)
     if [[ -d "$HOME/.config" ]]; then
