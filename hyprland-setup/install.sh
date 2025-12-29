@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Logging functions
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
 log_info() {
@@ -403,7 +403,7 @@ cleanup_residue_files() {
     )
     
     for pattern in "${temp_patterns[@]}"; do
-        for file in $pattern 2>/dev/null; do
+        for file in $pattern; do
             if [[ -f "$file" ]]; then
                 rm -f "$file"
                 log_info "Removed temp file: $(basename "$file")"
@@ -513,9 +513,9 @@ cleanup_residue_files() {
     )
     
     for pattern in "${session_patterns[@]}"; do
-        for file in $pattern 2>/dev/null; do
+        for file in $pattern &> /dev/null; do
             if [[ -f "$file" ]] && [[ -w "$file" ]]; then
-                rm -f "$file" 2>/dev/null || true
+                rm -f "$file" &> /dev/null || true
             fi
         done
     done
