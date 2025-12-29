@@ -1,363 +1,385 @@
 #!/bin/bash
 
 # Hyprland Setup Installation Script
-# Enhanced version with interactive options
+# Non-interactive, idempotent installation for Hyprland desktop environment
+# Assumes fresh Arch Linux with Wayland-only setup
 
-set -e
+set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# Function to print colored output
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+# Logging functions
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+log_info() {
+    log "INFO: $*"
 }
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+log_error() {
+    log "ERROR: $*"
 }
 
-print_question() {
-    echo -e "${CYAN}[QUESTION]${NC} $1"
+log_success() {
+    log "SUCCESS: $*"
 }
 
-# Function to ask yes/no questions
-ask_yes_no() {
-    while true; do
-        read -p "$(echo -e "${CYAN}$1${NC} (y/n): ")" yn
-        case $yn in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes or no.";;
-        esac
-    done
-}
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Function to check if running as root
-check_root() {
-    if [[ $EUID -eq 0 ]]; then
-        print_error "This script should not be run as root!"
-        print_error "Run it as a regular user. It will ask for sudo when needed."
-        exit 1
-    fi
-}
+# Check if running as root
+if [[ $EUID -eq 0 ]]; then
+    log_error "This script should not be run as root!"
+    log_error "Run it as a regular user. It will ask for sudo when needed."
+    exit 1
+fi
 
-# Function to check if yay is installed
-check_yay() {
-    if ! command -v yay &> /dev/null; then
-        print_warning "yay (AUR helper) is not installed."
-        if ask_yes_no "Would you like to install yay?"; then
-            install_yay
-        else
-            print_error "yay is required for this script. Exiting."
-            exit 1
-        fi
-    else
-        print_status "yay is already installed."
-    fi
-}
+# Check if on Arch Linux
+if ! command -v pacman &> /dev/null; then
+    log_error "This script is designed for Arch Linux systems only."
+    exit 1
+fi
 
-# Function to install yay
+# Check internet connection
+log_info "Checking internet connection..."
+if ! ping -c 1 archlinux.org &> /dev/null; then
+    log_error "No internet connection detected. Please check your network."
+    exit 1
+fi
+log_success "Internet connection verified"
+
+# Install yay if not present
 install_yay() {
-    print_status "Installing yay..."
-    sudo pacman -S --needed git base-devel
-    cd /tmp
-    git clone https://aur.archlinux.org/yay.git
-    cd yay
+    if command -v yay &> /dev/null; then
+        log_info "yay already installed, skipping"
+        return 0
+    fi
+    
+    log_info "Installing yay AUR helper..."
+    
+    # Install dependencies
+    sudo pacman -S --needed --noconfirm git base-devel
+    
+    # Clone and build yay
+    local temp_dir="/tmp/yay-install-$$"
+    git clone https://aur.archlinux.org/yay.git "$temp_dir"
+    cd "$temp_dir"
     makepkg -si --noconfirm
-    cd ~
-    rm -rf /tmp/yay
-    print_status "yay installed successfully!"
+    cd "$SCRIPT_DIR"
+    rm -rf "$temp_dir"
+    
+    log_success "yay installed successfully"
 }
 
-# Function to install packages
+# Install packages from file
 install_packages() {
-    local package_file=$1
-    local description=$2
+    local package_file="$1"
+    local description="$2"
     
-    if [[ -f "$package_file" ]]; then
-        print_status "Installing $description..."
-        yay -S --needed --noconfirm $(cat "$package_file" | tr '\n' ' ')
-        print_status "$description installed successfully!"
+    if [[ ! -f "$package_file" ]]; then
+        log_error "Package file not found: $package_file"
+        return 1
+    fi
+    
+    log_info "Installing $description..."
+    
+    # Read packages, remove comments and empty lines
+    local packages
+    packages=$(grep -v '^#' "$package_file" | grep -v '^$' | tr '\n' ' ')
+    
+    if [[ -n "$packages" ]]; then
+        yay -S --needed --noconfirm $packages
+        log_success "$description installed successfully"
     else
-        print_warning "$package_file not found. Skipping $description installation."
+        log_info "No packages found in $package_file"
     fi
 }
 
-# Function to copy configuration files
-copy_configs() {
-    print_status "Creating configuration directories..."
-    mkdir -p ~/.config/{hypr,waybar,wofi,kitty,swaylock,nvim,mako}
-    mkdir -p ~/.local/bin
-
-    print_status "Copying configuration files..."
+# Create necessary directories
+create_directories() {
+    log_info "Creating configuration directories..."
     
-    # Check if directories exist before copying
-    for dir in hypr waybar wofi kitty swaylock nvim mako; do
-        if [[ -d "$dir" ]]; then
-            cp -r "$dir"/* ~/.config/"$dir"/
-            print_status "Copied $dir configuration"
+    local dirs=(
+        "$HOME/.config/hypr"
+        "$HOME/.config/waybar"
+        "$HOME/.config/wofi"
+        "$HOME/.config/kitty"
+        "$HOME/.config/swaylock"
+        "$HOME/.config/nvim"
+        "$HOME/.config/mako"
+        "$HOME/.local/bin"
+        "$HOME/.local/share/applications"
+        "$HOME/Pictures/Screenshots"
+    )
+    
+    for dir in "${dirs[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            mkdir -p "$dir"
+            log_info "Created directory: $dir"
         else
-            print_warning "$dir directory not found. Skipping."
+            log_info "Directory already exists: $dir"
         fi
     done
-
-    # Copy scripts
-    if [[ -d "scripts" ]]; then
-        print_status "Installing scripts..."
-        cp scripts/* ~/.local/bin/
-        chmod +x ~/.local/bin/*.sh
-        print_status "Scripts installed successfully!"
-    else
-        print_warning "scripts directory not found. Skipping."
-    fi
+    
+    log_success "Configuration directories created"
 }
 
-# Function to install system files
+# Symlink configuration files
+symlink_configs() {
+    log_info "Creating symlinks for configuration files..."
+    
+    local configs=(
+        "hypr:$HOME/.config/hypr"
+        "waybar:$HOME/.config/waybar"
+        "wofi:$HOME/.config/wofi"
+        "kitty:$HOME/.config/kitty"
+        "swaylock:$HOME/.config/swaylock"
+        "nvim:$HOME/.config/nvim"
+        "mako:$HOME/.config/mako"
+    )
+    
+    for config in "${configs[@]}"; do
+        local src_dir="${config%%:*}"
+        local dest_dir="${config##*:}"
+        local src_path="$SCRIPT_DIR/$src_dir"
+        
+        if [[ ! -d "$src_path" ]]; then
+            log_error "Source directory not found: $src_path"
+            continue
+        fi
+        
+        # Remove existing directory if it's not a symlink
+        if [[ -d "$dest_dir" && ! -L "$dest_dir" ]]; then
+            log_info "Backing up existing config: $dest_dir -> $dest_dir.backup.$(date +%s)"
+            mv "$dest_dir" "$dest_dir.backup.$(date +%s)"
+        elif [[ -L "$dest_dir" ]]; then
+            log_info "Removing existing symlink: $dest_dir"
+            rm "$dest_dir"
+        fi
+        
+        # Create symlink
+        ln -sf "$src_path" "$dest_dir"
+        log_info "Symlinked: $src_path -> $dest_dir"
+    done
+    
+    log_success "Configuration symlinks created"
+}
+
+# Install scripts
+install_scripts() {
+    log_info "Installing utility scripts..."
+    
+    local scripts_dir="$SCRIPT_DIR/scripts"
+    
+    if [[ ! -d "$scripts_dir" ]]; then
+        log_error "Scripts directory not found: $scripts_dir"
+        return 1
+    fi
+    
+    for script in "$scripts_dir"/*.sh; do
+        if [[ -f "$script" ]]; then
+            local script_name=$(basename "$script")
+            local dest_path="$HOME/.local/bin/$script_name"
+            
+            # Create symlink instead of copying
+            ln -sf "$script" "$dest_path"
+            chmod +x "$script"
+            log_info "Installed script: $script_name"
+        fi
+    done
+    
+    log_success "Utility scripts installed"
+}
+
+# Install system files
 install_system_files() {
-    print_status "Installing system configurations..."
+    log_info "Installing system configuration files..."
     
-    if [[ -f "system/environment" ]]; then
-        sudo cp system/environment /etc/environment
-        print_status "Environment variables configured"
+    # Environment variables
+    if [[ -f "$SCRIPT_DIR/system/environment" ]]; then
+        sudo cp "$SCRIPT_DIR/system/environment" /etc/environment
+        log_info "Environment variables configured"
     else
-        print_warning "system/environment not found. Skipping."
+        log_error "Environment file not found: $SCRIPT_DIR/system/environment"
     fi
     
-    if [[ -f "system/xdg-portal.conf" ]]; then
+    # XDG portal configuration
+    if [[ -f "$SCRIPT_DIR/system/xdg-portal.conf" ]]; then
         sudo mkdir -p /usr/share/xdg-desktop-portal/
-        sudo cp system/xdg-portal.conf /usr/share/xdg-desktop-portal/
-        print_status "XDG portal configured"
+        sudo cp "$SCRIPT_DIR/system/xdg-portal.conf" /usr/share/xdg-desktop-portal/
+        log_info "XDG portal configured"
     else
-        print_warning "system/xdg-portal.conf not found. Skipping."
+        log_error "XDG portal config not found: $SCRIPT_DIR/system/xdg-portal.conf"
     fi
+    
+    log_success "System files installed"
 }
 
-# Function to enable services
+# Enable system services
 enable_services() {
-    print_status "Enabling system services..."
+    log_info "Enabling system services..."
     
-    # Enable audio services
-    systemctl --user enable --now pipewire pipewire-pulse wireplumber 2>/dev/null || {
-        print_warning "Could not enable audio services. They may already be running."
-    }
+    # Audio services (user-level)
+    local user_services=("pipewire" "pipewire-pulse" "wireplumber")
+    for service in "${user_services[@]}"; do
+        if systemctl --user list-unit-files | grep -q "^$service.service"; then
+            systemctl --user enable --now "$service" 2>/dev/null || {
+                log_info "Service $service may already be running or not available"
+            }
+            log_info "Enabled user service: $service"
+        else
+            log_info "Service not available: $service"
+        fi
+    done
     
-    # Enable bluetooth if available
-    if systemctl list-unit-files | grep -q bluetooth.service; then
-        print_status "Enabling Bluetooth service..."
-        sudo systemctl enable --now bluetooth.service
-    else
-        print_warning "Bluetooth service not available. Skipping."
-    fi
-    
-    # Enable NetworkManager if not already enabled
-    if ! systemctl is-enabled NetworkManager &>/dev/null; then
-        print_status "Enabling NetworkManager..."
-        sudo systemctl enable --now NetworkManager
-    fi
-}
-
-# Function to disable conflicting portals
-disable_conflicting_portals() {
-    print_status "Cleaning up conflicting XDG portals..."
-    
-    # Remove conflicting portals
-    conflicting_portals=("xdg-desktop-portal-gnome" "xdg-desktop-portal-gtk")
-    for portal in "${conflicting_portals[@]}"; do
-        if pacman -Qi "$portal" &>/dev/null; then
-            if ask_yes_no "Remove conflicting portal $portal?"; then
-                yay -R --noconfirm "$portal" || print_warning "Could not remove $portal"
+    # System services
+    local system_services=("NetworkManager" "bluetooth")
+    for service in "${system_services[@]}"; do
+        if systemctl list-unit-files | grep -q "^$service.service"; then
+            if ! systemctl is-enabled "$service" &>/dev/null; then
+                sudo systemctl enable --now "$service"
+                log_info "Enabled system service: $service"
+            else
+                log_info "Service already enabled: $service"
             fi
+        else
+            log_info "Service not available: $service"
         fi
     done
+    
+    log_success "System services configured"
 }
 
-# Function to set up fonts
-setup_fonts() {
-    print_status "Refreshing font cache..."
-    fc-cache -fv
-    print_status "Font cache refreshed!"
+# Clean up conflicting packages
+cleanup_conflicts() {
+    log_info "Cleaning up conflicting packages..."
+    
+    local conflicting_packages=("xdg-desktop-portal-gnome" "xdg-desktop-portal-gtk")
+    
+    for package in "${conflicting_packages[@]}"; do
+        if pacman -Qi "$package" &>/dev/null; then
+            log_info "Removing conflicting package: $package"
+            yay -R --noconfirm "$package" || {
+                log_info "Could not remove $package (may have dependencies)"
+            }
+        fi
+    done
+    
+    log_success "Conflicting packages cleaned up"
 }
 
-# Main menu function
-show_menu() {
-    clear
-    echo -e "${PURPLE}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${PURPLE}║                    Hyprland Setup Script                    ║${NC}"
-    echo -e "${PURPLE}║                  Catppuccin Mocha Theme                     ║${NC}"
-    echo -e "${PURPLE}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${CYAN}Please select installation options:${NC}"
-    echo ""
-    echo "1. Full installation (recommended for new setups)"
-    echo "2. Install packages only"
-    echo "3. Copy configuration files only"
-    echo "4. Install system files and enable services only"
-    echo "5. Custom installation (choose components)"
-    echo "6. Exit"
-    echo ""
+# Refresh font cache
+refresh_fonts() {
+    log_info "Refreshing font cache..."
+    fc-cache -fv &>/dev/null
+    log_success "Font cache refreshed"
 }
 
-# Function for full installation
-full_installation() {
-    print_status "Starting full Hyprland installation..."
+# Set environment defaults
+set_environment_defaults() {
+    log_info "Setting environment defaults..."
     
-    check_yay
-    
-    if ask_yes_no "Install base packages (hyprland, waybar, etc.)?"; then
-        install_packages "packages/base.txt" "base packages"
+    # Ensure .local/bin is in PATH for current session
+    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+        export PATH="$HOME/.local/bin:$PATH"
+        log_info "Added ~/.local/bin to PATH for current session"
     fi
     
-    if ask_yes_no "Install development packages (neovim, git, etc.)?"; then
-        install_packages "packages/dev.txt" "development packages"
-    fi
+    # Set XDG environment for current session
+    export XDG_CURRENT_DESKTOP=Hyprland
+    export XDG_SESSION_TYPE=wayland
+    export XDG_SESSION_DESKTOP=Hyprland
     
-    if [[ -f "packages/optional.txt" ]] && ask_yes_no "Install optional packages?"; then
-        install_packages "packages/optional.txt" "optional packages"
-    fi
-    
-    copy_configs
-    install_system_files
-    enable_services
-    disable_conflicting_portals
-    setup_fonts
-    
-    print_status "Full installation completed!"
+    log_success "Environment defaults set"
 }
 
-# Function for custom installation
-custom_installation() {
-    print_status "Custom installation selected..."
-    
-    if ask_yes_no "Check/install yay AUR helper?"; then
-        check_yay
-    fi
-    
-    if ask_yes_no "Install base packages?"; then
-        install_packages "packages/base.txt" "base packages"
-    fi
-    
-    if ask_yes_no "Install development packages?"; then
-        install_packages "packages/dev.txt" "development packages"
-    fi
-    
-    if [[ -f "packages/optional.txt" ]] && ask_yes_no "Install optional packages?"; then
-        install_packages "packages/optional.txt" "optional packages"
-    fi
-    
-    if ask_yes_no "Copy configuration files?"; then
-        copy_configs
-    fi
-    
-    if ask_yes_no "Install system files?"; then
-        install_system_files
-    fi
-    
-    if ask_yes_no "Enable system services?"; then
-        enable_services
-    fi
-    
-    if ask_yes_no "Clean up conflicting XDG portals?"; then
-        disable_conflicting_portals
-    fi
-    
-    if ask_yes_no "Refresh font cache?"; then
-        setup_fonts
-    fi
-    
-    print_status "Custom installation completed!"
-}
-
-# Function to show final instructions
-show_final_instructions() {
-    echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                     Installation Complete!                  ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}Next steps:${NC}"
+# Print next steps
+print_next_steps() {
+    log_success "Installation completed successfully!"
+    echo
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🎉 HYPRLAND SETUP COMPLETE"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo
+    echo "📋 NEXT STEPS:"
     echo "1. Log out and log back in (or reboot) for environment changes to take effect"
-    echo "2. Start Hyprland from your display manager or run 'Hyprland' from TTY"
-    echo ""
-    echo -e "${CYAN}Key bindings:${NC}"
-    echo "• Super + Q: Open terminal (kitty)"
-    echo "• Super + Space: Application launcher (wofi)"
-    echo "• Super + E: File manager (thunar)"
-    echo "• Super + Shift + E: Terminal file manager (yazi)"
-    echo "• Super + B: Web browser (google-chrome)"
-    echo "• Super + L: Lock screen (swaylock)"
-    echo "• Super + S: Screenshot with editing (grim + slurp + swappy)"
-    echo ""
-    echo -e "${PURPLE}Enjoy your new Hyprland setup with Catppuccin Mocha theme! 🎉${NC}"
+    echo "2. Start Hyprland from TTY by running: Hyprland"
+    echo "3. Or set up a display manager to auto-start Hyprland"
+    echo
+    echo "⌨️  KEY BINDINGS:"
+    echo "• Super + Q          → Open terminal (kitty)"
+    echo "• Super + Space      → Application launcher (wofi)"
+    echo "• Super + E          → File manager (thunar)"
+    echo "• Super + Shift + E  → Terminal file manager (yazi)"
+    echo "• Super + B          → Web browser"
+    echo "• Super + L          → Lock screen"
+    echo "• Super + S          → Screenshot with editing"
+    echo "• Super + Shift + X  → Close window"
+    echo
+    echo "🔧 CONFIGURATION:"
+    echo "• Configs are symlinked from: $SCRIPT_DIR"
+    echo "• Edit source files to modify configuration"
+    echo "• Scripts installed to: ~/.local/bin/"
+    echo
+    echo "📚 DOCUMENTATION:"
+    echo "• Hyprland Wiki: https://wiki.hyprland.org/"
+    echo "• Configuration files are in ~/.config/"
+    echo
+    echo "🎨 THEME: Catppuccin Mocha (dark theme with beautiful colors)"
+    echo
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
-# Main script execution
+# Main installation function
 main() {
-    check_root
+    log_info "Starting Hyprland installation..."
+    log_info "Script directory: $SCRIPT_DIR"
     
-    while true; do
-        show_menu
-        read -p "Enter your choice (1-6): " choice
-        
-        case $choice in
-            1)
-                full_installation
-                show_final_instructions
-                break
-                ;;
-            2)
-                check_yay
-                if ask_yes_no "Install base packages?"; then
-                    install_packages "packages/base.txt" "base packages"
-                fi
-                if ask_yes_no "Install development packages?"; then
-                    install_packages "packages/dev.txt" "development packages"
-                fi
-                if [[ -f "packages/optional.txt" ]] && ask_yes_no "Install optional packages?"; then
-                    install_packages "packages/optional.txt" "optional packages"
-                fi
-                print_status "Package installation completed!"
-                ;;
-            3)
-                copy_configs
-                print_status "Configuration files copied!"
-                ;;
-            4)
-                install_system_files
-                enable_services
-                print_status "System setup completed!"
-                ;;
-            5)
-                custom_installation
-                show_final_instructions
-                break
-                ;;
-            6)
-                print_status "Exiting..."
-                exit 0
-                ;;
-            *)
-                print_error "Invalid option. Please choose 1-6."
-                sleep 2
-                ;;
-        esac
-        
-        if [[ $choice != 1 && $choice != 5 ]]; then
-            echo ""
-            read -p "Press Enter to return to menu..."
-        fi
-    done
+    # Update system first
+    log_info "Updating system packages..."
+    sudo pacman -Syu --noconfirm
+    log_success "System updated"
+    
+    # Install yay AUR helper
+    install_yay
+    
+    # Install packages
+    install_packages "$SCRIPT_DIR/packages/base.txt" "base packages"
+    install_packages "$SCRIPT_DIR/packages/dev.txt" "development packages"
+    
+    # Install optional packages if file exists
+    if [[ -f "$SCRIPT_DIR/packages/optional.txt" ]]; then
+        install_packages "$SCRIPT_DIR/packages/optional.txt" "optional packages"
+    fi
+    
+    # Create directories
+    create_directories
+    
+    # Symlink configurations
+    symlink_configs
+    
+    # Install scripts
+    install_scripts
+    
+    # Install system files
+    install_system_files
+    
+    # Enable services
+    enable_services
+    
+    # Clean up conflicts
+    cleanup_conflicts
+    
+    # Refresh fonts
+    refresh_fonts
+    
+    # Set environment defaults
+    set_environment_defaults
+    
+    # Print next steps
+    print_next_steps
+    
+    log_success "Installation script completed successfully!"
 }
 
-# Run the main function
+# Run main function
 main "$@"
