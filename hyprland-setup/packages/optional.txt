@@ -1,0 +1,10 @@
+steam
+lutris
+gimp
+blender
+vlc
+spotify
+thunderbird
+libreoffice-fresh
+docker
+docker-compose

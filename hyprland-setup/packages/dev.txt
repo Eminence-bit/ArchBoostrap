@@ -1,0 +1,11 @@
+neovim
+git
+gcc
+gdb
+binutils
+nasm
+google-chrome-stable
+ttf-jetbrains-mono
+noto-fonts
+noto-fonts-emoji
+yazi
