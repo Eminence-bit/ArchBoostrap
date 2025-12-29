@@ -50,14 +50,27 @@ log_success "Internet connection verified"
 # Install yay if not present
 install_yay() {
     if command -v yay &> /dev/null; then
-        log_info "yay already installed, skipping"
+        log_success "yay already installed, skipping"
         return 0
     fi
     
     log_info "Installing yay AUR helper..."
     
-    # Install dependencies
-    sudo pacman -S --needed --noconfirm git base-devel
+    # Check if base-devel and git are installed
+    local deps_to_install=()
+    for dep in git base-devel; do
+        if ! pacman -Qi "$dep" &>/dev/null; then
+            deps_to_install+=("$dep")
+        fi
+    done
+    
+    # Install dependencies if needed
+    if [[ ${#deps_to_install[@]} -gt 0 ]]; then
+        log_info "Installing yay dependencies: ${deps_to_install[*]}"
+        sudo pacman -S --needed --noconfirm "${deps_to_install[@]}"
+    else
+        log_info "yay dependencies already installed"
+    fi
     
     # Clone and build yay
     local temp_dir="/tmp/yay-install-$$"
@@ -80,17 +93,42 @@ install_packages() {
         return 1
     fi
     
-    log_info "Installing $description..."
+    log_info "Checking $description..."
     
     # Read packages, remove comments and empty lines
-    local packages
-    packages=$(grep -v '^#' "$package_file" | grep -v '^$' | tr '\n' ' ')
+    local all_packages
+    all_packages=$(grep -v '^#' "$package_file" | grep -v '^$' | tr '\n' ' ')
     
-    if [[ -n "$packages" ]]; then
-        yay -S --needed --noconfirm $packages
-        log_success "$description installed successfully"
-    else
+    if [[ -z "$all_packages" ]]; then
         log_info "No packages found in $package_file"
+        return 0
+    fi
+    
+    # Check which packages are already installed
+    local packages_to_install=()
+    local already_installed=()
+    
+    for package in $all_packages; do
+        # Check if package is installed (works for both pacman and AUR packages)
+        if pacman -Qi "$package" &>/dev/null; then
+            already_installed+=("$package")
+        else
+            packages_to_install+=("$package")
+        fi
+    done
+    
+    # Report already installed packages
+    if [[ ${#already_installed[@]} -gt 0 ]]; then
+        log_info "Already installed (${#already_installed[@]} packages): ${already_installed[*]:0:5}$([ ${#already_installed[@]} -gt 5 ] && echo "...")"
+    fi
+    
+    # Install missing packages
+    if [[ ${#packages_to_install[@]} -gt 0 ]]; then
+        log_info "Installing ${#packages_to_install[@]} missing packages for $description..."
+        yay -S --needed --noconfirm "${packages_to_install[@]}"
+        log_success "$description - ${#packages_to_install[@]} new packages installed"
+    else
+        log_success "$description - all packages already installed, skipping"
     fi
 }
 
@@ -196,8 +234,12 @@ install_system_files() {
     
     # Environment variables
     if [[ -f "$SCRIPT_DIR/system/environment" ]]; then
-        sudo cp "$SCRIPT_DIR/system/environment" /etc/environment
-        log_info "Environment variables configured"
+        if [[ -f "/etc/environment" ]] && cmp -s "$SCRIPT_DIR/system/environment" "/etc/environment"; then
+            log_info "Environment file already up to date"
+        else
+            sudo cp "$SCRIPT_DIR/system/environment" /etc/environment
+            log_info "Environment variables configured"
+        fi
     else
         log_error "Environment file not found: $SCRIPT_DIR/system/environment"
     fi
@@ -205,27 +247,36 @@ install_system_files() {
     # XDG portal configuration
     if [[ -f "$SCRIPT_DIR/system/xdg-portal.conf" ]]; then
         sudo mkdir -p /usr/share/xdg-desktop-portal/
-        sudo cp "$SCRIPT_DIR/system/xdg-portal.conf" /usr/share/xdg-desktop-portal/
-        log_info "XDG portal configured"
+        local portal_dest="/usr/share/xdg-desktop-portal/xdg-portal.conf"
+        if [[ -f "$portal_dest" ]] && cmp -s "$SCRIPT_DIR/system/xdg-portal.conf" "$portal_dest"; then
+            log_info "XDG portal config already up to date"
+        else
+            sudo cp "$SCRIPT_DIR/system/xdg-portal.conf" "$portal_dest"
+            log_info "XDG portal configured"
+        fi
     else
         log_error "XDG portal config not found: $SCRIPT_DIR/system/xdg-portal.conf"
     fi
     
-    log_success "System files installed"
+    log_success "System files checked and updated"
 }
 
 # Enable system services
 enable_services() {
-    log_info "Enabling system services..."
+    log_info "Checking and enabling system services..."
     
     # Audio services (user-level)
     local user_services=("pipewire" "pipewire-pulse" "wireplumber")
     for service in "${user_services[@]}"; do
         if systemctl --user list-unit-files | grep -q "^$service.service"; then
-            systemctl --user enable --now "$service" 2>/dev/null || {
-                log_info "Service $service may already be running or not available"
-            }
-            log_info "Enabled user service: $service"
+            if systemctl --user is-enabled "$service" &>/dev/null; then
+                log_info "User service already enabled: $service"
+            else
+                systemctl --user enable --now "$service" 2>/dev/null || {
+                    log_info "Could not enable $service (may already be running)"
+                }
+                log_info "Enabled user service: $service"
+            fi
         else
             log_info "Service not available: $service"
         fi
@@ -235,11 +286,11 @@ enable_services() {
     local system_services=("NetworkManager" "bluetooth")
     for service in "${system_services[@]}"; do
         if systemctl list-unit-files | grep -q "^$service.service"; then
-            if ! systemctl is-enabled "$service" &>/dev/null; then
+            if systemctl is-enabled "$service" &>/dev/null; then
+                log_info "System service already enabled: $service"
+            else
                 sudo systemctl enable --now "$service"
                 log_info "Enabled system service: $service"
-            else
-                log_info "Service already enabled: $service"
             fi
         else
             log_info "Service not available: $service"
@@ -251,20 +302,182 @@ enable_services() {
 
 # Clean up conflicting packages
 cleanup_conflicts() {
-    log_info "Cleaning up conflicting packages..."
+    log_info "Checking for conflicting packages..."
     
     local conflicting_packages=("xdg-desktop-portal-gnome" "xdg-desktop-portal-gtk")
+    local found_conflicts=()
     
     for package in "${conflicting_packages[@]}"; do
         if pacman -Qi "$package" &>/dev/null; then
-            log_info "Removing conflicting package: $package"
-            yay -R --noconfirm "$package" || {
-                log_info "Could not remove $package (may have dependencies)"
-            }
+            found_conflicts+=("$package")
         fi
     done
     
+    if [[ ${#found_conflicts[@]} -eq 0 ]]; then
+        log_success "No conflicting packages found"
+        return 0
+    fi
+    
+    log_info "Found conflicting packages: ${found_conflicts[*]}"
+    for package in "${found_conflicts[@]}"; do
+        log_info "Removing conflicting package: $package"
+        yay -R --noconfirm "$package" || {
+            log_info "Could not remove $package (may have dependencies)"
+        }
+    done
+    
     log_success "Conflicting packages cleaned up"
+}
+
+# Clean up residue files after configuration updates
+cleanup_residue_files() {
+    log_info "Cleaning up residue and outdated configuration files..."
+    
+    local cleaned_count=0
+    
+    # Clean up old backup files (older than 30 days)
+    if [[ -d "$HOME/.config" ]]; then
+        local old_backups
+        old_backups=$(find "$HOME/.config" -name "*.backup.*" -type f -mtime +30 2>/dev/null || true)
+        if [[ -n "$old_backups" ]]; then
+            echo "$old_backups" | while read -r backup_file; do
+                if [[ -f "$backup_file" ]]; then
+                    rm -f "$backup_file"
+                    log_info "Removed old backup: $(basename "$backup_file")"
+                    ((cleaned_count++))
+                fi
+            done
+        fi
+    fi
+    
+    # Clean up temporary files
+    local temp_patterns=(
+        "$HOME/.config/*/.tmp*"
+        "$HOME/.config/*/tmp.*"
+        "$HOME/.config/*/*.tmp"
+        "$HOME/.config/*/cache/*"
+        "$HOME/.local/share/recently-used.xbel*"
+    )
+    
+    for pattern in "${temp_patterns[@]}"; do
+        for file in $pattern 2>/dev/null; do
+            if [[ -f "$file" ]]; then
+                rm -f "$file"
+                log_info "Removed temp file: $(basename "$file")"
+                ((cleaned_count++))
+            fi
+        done
+    done
+    
+    # Clean up conflicting desktop entries
+    local conflicting_entries=(
+        "$HOME/.local/share/applications/hyprland.desktop"
+        "$HOME/.local/share/applications/waybar.desktop"
+        "$HOME/.config/autostart/hyprland.desktop"
+    )
+    
+    for entry in "${conflicting_entries[@]}"; do
+        if [[ -f "$entry" ]]; then
+            rm -f "$entry"
+            log_info "Removed conflicting desktop entry: $(basename "$entry")"
+            ((cleaned_count++))
+        fi
+    done
+    
+    # Clean up old Hyprland cache and logs
+    local hypr_cache_dirs=(
+        "$HOME/.cache/hyprland"
+        "$HOME/.local/share/hyprland"
+    )
+    
+    for cache_dir in "${hypr_cache_dirs[@]}"; do
+        if [[ -d "$cache_dir" ]]; then
+            # Only remove cache files, not the directory structure
+            find "$cache_dir" -type f -name "*.log" -mtime +7 -delete 2>/dev/null || true
+            find "$cache_dir" -type f -name "*.cache" -delete 2>/dev/null || true
+            log_info "Cleaned cache directory: $(basename "$cache_dir")"
+        fi
+    done
+    
+    # Clean up old waybar cache
+    if [[ -d "$HOME/.cache/waybar" ]]; then
+        rm -rf "$HOME/.cache/waybar"/*
+        log_info "Cleaned waybar cache"
+        ((cleaned_count++))
+    fi
+    
+    # Clean up old wofi cache
+    if [[ -d "$HOME/.cache/wofi" ]]; then
+        rm -rf "$HOME/.cache/wofi"/*
+        log_info "Cleaned wofi cache"
+        ((cleaned_count++))
+    fi
+    
+    # Remove broken symlinks in config directories
+    local config_dirs=(
+        "$HOME/.config/hypr"
+        "$HOME/.config/waybar"
+        "$HOME/.config/wofi"
+        "$HOME/.config/kitty"
+        "$HOME/.config/mako"
+    )
+    
+    for config_dir in "${config_dirs[@]}"; do
+        if [[ -d "$config_dir" ]]; then
+            find "$config_dir" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        fi
+    done
+    
+    # Clean up old font cache
+    if command -v fc-cache &> /dev/null; then
+        fc-cache -f &>/dev/null
+        log_info "Refreshed font cache"
+    fi
+    
+    # Clean up package cache (keep last 3 versions)
+    if command -v paccache &> /dev/null; then
+        paccache -rk3 &>/dev/null || true
+        log_info "Cleaned package cache"
+    fi
+    
+    # Clean up old journal logs (keep last 7 days)
+    if command -v journalctl &> /dev/null; then
+        sudo journalctl --vacuum-time=7d &>/dev/null || true
+        log_info "Cleaned system journal logs"
+    fi
+    
+    # Clean up user's trash
+    if [[ -d "$HOME/.local/share/Trash" ]]; then
+        local trash_size
+        trash_size=$(du -sh "$HOME/.local/share/Trash" 2>/dev/null | cut -f1 || echo "0")
+        if [[ "$trash_size" != "0" ]] && [[ "$trash_size" != "4.0K" ]]; then
+            rm -rf "$HOME/.local/share/Trash"/{files,info}/* 2>/dev/null || true
+            log_info "Emptied user trash ($trash_size)"
+        fi
+    fi
+    
+    # Remove old thumbnails
+    if [[ -d "$HOME/.cache/thumbnails" ]]; then
+        find "$HOME/.cache/thumbnails" -type f -mtime +30 -delete 2>/dev/null || true
+        log_info "Cleaned old thumbnails"
+    fi
+    
+    # Clean up old session files
+    local session_patterns=(
+        "/tmp/.X11-unix/X*"
+        "/tmp/.ICE-unix/*"
+        "$HOME/.xsession-errors*"
+    )
+    
+    for pattern in "${session_patterns[@]}"; do
+        for file in $pattern 2>/dev/null; do
+            if [[ -f "$file" ]] && [[ -w "$file" ]]; then
+                rm -f "$file" 2>/dev/null || true
+            fi
+        done
+    done
+    
+    log_success "Cleanup completed - removed residue files and refreshed caches"
 }
 
 # Refresh font cache
@@ -273,7 +486,6 @@ refresh_fonts() {
     fc-cache -fv &>/dev/null
     log_success "Font cache refreshed"
 }
-
 # Set environment defaults
 set_environment_defaults() {
     log_info "Setting environment defaults..."
@@ -334,10 +546,31 @@ main() {
     log_info "Starting Hyprland installation..."
     log_info "Script directory: $SCRIPT_DIR"
     
-    # Update system first
-    log_info "Updating system packages..."
-    sudo pacman -Syu --noconfirm
-    log_success "System updated"
+    # Update system first (but check if recently updated)
+    local last_update=""
+    if [[ -f "/var/log/pacman.log" ]]; then
+        last_update=$(grep -E "upgraded|installed" /var/log/pacman.log | tail -1 | cut -d' ' -f1-2)
+        log_info "Last package operation: $last_update"
+    fi
+    
+    # Only update if last update was more than 1 day ago or no recent activity
+    local should_update=true
+    if [[ -n "$last_update" ]]; then
+        local last_update_epoch=$(date -d "$last_update" +%s 2>/dev/null || echo 0)
+        local current_epoch=$(date +%s)
+        local day_in_seconds=86400
+        
+        if [[ $((current_epoch - last_update_epoch)) -lt $day_in_seconds ]]; then
+            should_update=false
+            log_info "System was updated recently, skipping system update"
+        fi
+    fi
+    
+    if [[ "$should_update" == "true" ]]; then
+        log_info "Updating system packages..."
+        sudo pacman -Syu --noconfirm
+        log_success "System updated"
+    fi
     
     # Install yay AUR helper
     install_yay
@@ -368,6 +601,9 @@ main() {
     
     # Clean up conflicts
     cleanup_conflicts
+    
+    # Clean up residue files and refresh caches
+    cleanup_residue_files
     
     # Refresh fonts
     refresh_fonts
