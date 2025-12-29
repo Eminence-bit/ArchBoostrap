@@ -513,7 +513,7 @@ cleanup_residue_files() {
     )
     
     for pattern in "${session_patterns[@]}"; do
-        for file in $pattern &> /dev/null; do
+        for file in $pattern; do
             if [[ -f "$file" ]] && [[ -w "$file" ]]; then
                 rm -f "$file" &> /dev/null || true
             fi
